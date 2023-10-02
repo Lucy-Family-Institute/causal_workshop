@@ -33,7 +33,7 @@ We will not cover these in this workshop, but some knowledge of both would be he
 [Rstudio IDE](https://www.rstudio.com/products/rstudio/download/)
 
 ## Packages
-We'll be using pacman to ensure libraries are installed:
+We'll be using pacman to ensure packages are installed:
 
 ```{r, results='hide', message=F, warning=F}
 if (!require("pacman")) install.packages("pacman")
@@ -58,7 +58,7 @@ Simple, right? Well... no.  We refer to these as the potential outcomes for pers
 
 ## Identification
 
-$$ (Y_i(0), Y_i(1)) \ci T$$
+Independence of treatment assignment and potential outcomes (Ignorability): $$ (Y_i(0), Y_i(1)) \ci T$$
 
 Let's use a hypothetical to illustrate the issues with non-experimental designs and how randomization can overcome them.  Assume that we're interested in the impact of some kind of voting encouragement on the probability somebody votes.  We can further write the probability of voting as a function of income (wealthy people vote more) and political interest (higher interest more likely):
 
@@ -88,7 +88,7 @@ Now analyze the results:
 ```{r}
 print(t.test(vote~factor(self_treat_data$treat_self, labels=c("Control", "Treatment")), self_treat_data))
 ```
-What's gone wrong? Our control group does not match our counterfactual group because of differences is unobserved interest:
+What's gone wrong? Our control group does not match our counterfactual group because of differences in unobserved interest:
 
 ```{r}
 self_treat_data %>%
@@ -161,6 +161,7 @@ rd_plot %>%
   mutate(observed = ifelse((name=="Y_0" &  c==0) | (name=="Y_1" & c==1), 1,0)) %>%
   ggplot(aes(X, value, color=name))+
   geom_smooth(method="loess", se=F)+
+  geom_vline(xintercept = 0)+
   theme_bw()
 ```
 
@@ -231,14 +232,14 @@ Matching's value is in it's weaker assumptions than regression.  Matching allows
 
 ## Propensity Score Matching
 
-Given the high dimensionality of matching problems, we need a way to reduce the covariate matrix $X$ into a single measure of similarity or distance.  Propensity score matching creates a metric of the probability of a unit receiving treatment based on $X$.
-
-We model:
+Given the high dimensionality of matching problems, we need a way to reduce the covariate matrix $X$ into a single measure of similarity or distance.  Propensity score matching creates a metric of the probability of a unit receiving treatment based on $X$, typically using logistic regression:
 
 $$Pr(T|X) = \frac{1}{1+e^{X \beta}}$$
-We could use whatever model we like, but logistic regression is standard.  Mechanically, we simply regress the treatment indicator $T$ against the covariates, and generate the predicted probability of receiving treatment - either as the predicted probability (above) or linear inner portion of the GLM (just $X \beta$).  
+Mechanically, we simply estimate a GLM with a logistic link function that regresses the treatment indicator $T$ against the covariates, and generate the predicted probability of receiving treatment - either as the predicted probability (above) or linear inner portion of the GLM (just $X \beta$).  
 
-To get a feel let's look at the distance metric for the LaLonde data. 
+To get a feel let's look at the distance metric for the National Supported Work (Lalonde) data.   The NSW was a job training program that randomly assigned applicants to a training position and collected pre-treatment covariates on age, race, marital status, pre-treatment income, etc.  The outcome of interest is post-intervention earnings (re78).  It is commonly used to illustrate the difficulty of recreating the experimental control group from non-experimental data: 
+
+
 ```{r}
 data("lalonde", package = "MatchIt")
 tibble(lalonde)
@@ -290,7 +291,7 @@ mod <- lm(re78 ~ treat, data=match_dat, weights=weights)
 summary(mod)
 ```
 
-The effect is just the coefficient on the treatment indicator.  Some authors (e.g., Ho et. al 2007) argue that you should perform full parametric analysis on the matched data, including the matched variables as controls:
+The effect is just the coefficient on the treatment indicator.  Some authors (e.g., Ho et. al 2007) argue that you should perform full parametric analysis on the matched data, including the matched variables as controls, as the controls will eliminate residual imbalance due to imperfect matching:
 
 ```{r}
 
