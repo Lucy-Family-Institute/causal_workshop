@@ -1,0 +1,514 @@
+---
+title: "Causal Inference Workshop"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  #html_notebook:
+  #  toc: yes
+  #  df_print: paged
+date: "Oct 3, 2023"
+#link-citations: yes
+#bibliography: ref.bib
+---
+
+\newcommand{\ci}{\perp\!\!\!\perp}
+
+
+# Introduction
+
+This workshop offers an introduction to causal inference methods with a focus on applications in R.  Some familiarity with R is assumed.  We will cover some basic theoretical results, but this workshop is not intended to substitute for a more detailed theoretical treatment.
+
+## Review of OLS and Statistical Inference
+
+We will not cover these in this workshop, but some knowledge of both would be helpful.  For a refresher please read [the first two sections of this training](https://github.com/Lucy-Family-Institute/tscs_demo/blob/main/tscs_demo.html)
+
+
+# Setup
+## Downloads
+[Training Repo, including this file](https://github.com/Lucy-Family-Institute/causal_workshop.git)
+
+[R](https://cran.r-project.org)
+
+[Rstudio IDE](https://www.rstudio.com/products/rstudio/download/)
+
+## Packages
+We'll be using pacman to ensure libraries are installed:
+
+```{r, results='hide', message=F, warning=F}
+if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load("tidyverse", "rdrobust", "haven", "tidysynth",
+                 "MatchIt", "data.table", "marginaleffects")
+
+#setwd()
+set.seed(1)
+```
+
+# Potential Outcomes
+
+Theoretically, we are interested in some treatment $T$'s effect on some outcome $Y$, both of which can be subscripted to denote individual realizations - e.g. $T_i$ for person $i$'s treatment and $Y_i$ for their outcome where $i$ is just an indicator for the individual.  For simplicity, assume a binary treatment where $T=0$ is the control condition, meaning no treatment is given.
+
+Fundamentally we would like to know the effect of the treatment $T$.  We can conceptualize of the treatment effect for $i$ as the difference between $i$'s outcome when they receive the treatment vs. when they do not.  Denote $Y_i(0)$ as the *potential outcome* for person $i$ when they are given the control and $Y_i(1)$ the potential outcome when given the treatment.  Then the treatment effect is simply the difference in the potential outcomes:
+
+$$Y_i(1) - Y_i(0)$$
+Simple, right? Well... no.  We refer to these as the potential outcomes for person $i$ because we *never observe both.*  Person $i$ may either get the treatment or the control not both.  The *fundamental problem of causal inference* is our inability to observe both of these states of the world.  One way to conceptualize of the inference problem is one of missing data: for people who receive the treatment we need to find untreated units that take the place of $Y_i(0)$. If, through design or statistics, we are able to find or create valid stand-ins, then the treatment effect is identified.
+
+# Randomized Experiments
+
+## Identification
+
+$$ (Y_i(0), Y_i(1)) \ci T$$
+
+Let's use a hypothetical to illustrate the issues with non-experimental designs and how randomization can overcome them.  Assume that we're interested in the impact of some kind of voting encouragement on the probability somebody votes.  We can further write the probability of voting as a function of income (wealthy people vote more) and political interest (higher interest more likely):
+
+$$ Vote = 0.1 + 0.03 \times GOTV + 0.05 \times Income + .25 \times Interest $$
+
+GOTV stands for get-out-the-vote and is binary.  Let's assume interest is binary and income is scaled 0-10.  The correct average treatment effect is 0.03 or a 3\% increase in the probability somebody votes.  Let's also assume for now that interest is unobserved.
+
+Now, assume we grab 200 people and ask for 100 to volunteer for the treatment.  It seems likely that people who are more interested in politics would be more likely to volunteer for the treatment:
+
+```{r, echo=F}
+n <- 100
+int <- c(rep(0,n/2), rep(1,n/2))
+treat_self <- rbinom(n, size=1, prob = .25 + .5*int)
+table(int, treat_self)
+```
+So high interest individuals are much more likely to select the treatment.  Now let's draw the other variables and generate $Y$:
+
+```{r}
+income <- sample(1:10, n, replace=T)
+vote <- .1+ .3*treat_self + 0.05*income+.25*int + rnorm(n, 0, .2)
+self_treat_data <- data.frame(vote, treat_self, income, int)
+rm(vote, treat_self)
+```
+
+Now analyze the results:
+
+```{r}
+print(t.test(vote~factor(self_treat_data$treat_self, labels=c("Control", "Treatment")), self_treat_data))
+```
+What's gone wrong? Our control group does not match our counterfactual group because of differences is unobserved interest:
+
+```{r}
+self_treat_data %>%
+ group_by(treat_self) %>%
+  summarize_all(mean) %>%
+  round(digits=2)
+```
+```{r}
+treat_random <- sample(0:1, n, replace=T)
+vote <- .1+ 0.3*treat_random + 0.05*income+.25*int + rnorm(n, 0, .2)
+random_treat_data <- data.frame(vote, treat_random, income, int)
+rm(vote, treat_random, income, int)
+print(t.test(vote~factor(random_treat_data$treat_random, labels=c("Control", "Treatment")), random_treat_data))
+```
+So, why did this work where self-treatment did not?
+
+```{r}
+random_treat_data %>%
+ group_by(treat_random) %>%
+  summarize_all(mean) %>%
+  round(digits=2)
+```
+## Good Control / Bad Control
+
+Control variables are unnecessary for the identification of treatment effects from a randomized experiment.  Intuitively, there's no need to statistically remove associations between confounders and $T$ and $Y$ because randomization ensures the confounders and $T$ are independent.  Controlling for other factors can, at best, improve the precision of our estimates.  At worst it can introduce bias by opening paths between confounders of the control variable and outcome.
+
+Is income a good or bad control?
+
+```{r}
+ls <- list()
+ls[[1]] <- lm(vote~treat_random, data=random_treat_data)
+ls[[2]] <- lm(vote~treat_random+income, data=random_treat_data)
+lapply(ls, function(x) summary(x))
+```
+Controlling for Income is fine - we know from specifying the functions that it is independent of treatment, therefore it can't confound $T \rightarrow Y$ relationship, regardless of whether it effects $Y$.  Note some trivial improvement in precision
+
+Let's make a bad control.  Assume that receiving the GOTV treatment increases your awareness of an upcoming election and more aware people are more likely to vote.  Awareness is also a function of political interest - which again we don't observe.  Assume you want to know whether the treatment has an effect beyond increasing awareness, and you test for this by controlling for it.  To make things simple, let's condition on awareness being high - but other adjustment methods will create the same issues.
+
+```{r}
+random_treat_data$aware <- rbinom(n, size=1, prob = .3*random_treat_data$treat_random + .4 * random_treat_data$int)
+random_treat_data$vote_aware<- random_treat_data$vote + .3*random_treat_data$aware
+summary(lm(vote_aware~treat_random, data=random_treat_data[random_treat_data$aware==1,]))
+summary(lm(vote_aware~treat_random, data=random_treat_data))
+
+random_treat_data %>%
+  filter(aware==1) %>%
+  group_by(treat_random) %>% 
+  summarize_all(mean) %>%
+  round(digits=2)
+```
+
+
+# Regression Discontinuity
+
+A RD design uses a cut point in a continuous metric, known as the running or forcing variable, to determine treatment assignment when treatment assignment cannot be random.  In a canonical (sharp) RD, all units above or below the cut point receive treatment, and the others the control. Some examples of forcing variables and the treatments they determine are: age (Medicare eligibility), SAT score (college admissions), blood alcohol content (DUI charge).  Given non-random assignment, the effect of treatment cannot be estimated as the difference of means.  However, under additional assumptions, the treatment effect is identified at the cut point - meaning we compare people who have very similar values of the forcing variable on different sides of the cut point.
+
+## Identification
+Local smoothness or local randomization.  Let $X$ be the forcing variable and $c$ the cut point that determines treatment assignment:
+
+$$ E(Y_i(1) - Y_i(0) | X_i = c) = \lim_{x\uparrow c}E(Y_i|X_i = x) - \lim_{x\downarrow c}E(Y_i|X_i=x) $$
+Basically, this says that the differences in the potential outcomes at cutpoint are equal to the limits of the observed outcomes approaching the cutpoint from both sides.  This is much easier to see:
+
+```{r}
+rd_plot <- data.frame(X = rnorm(100,0 ,1))
+rd_plot %>%
+  mutate(c = ifelse(X > 0, 1,0),
+         Y_0 = 3+apply(poly(rd_plot$X, 2, raw=T), 1, sum) + rnorm(100, 0, 1),
+         Y_1 = -2+ apply(poly(rd_plot$X, 3, raw=T), 1, sum) + rnorm(100, 0, 1)) %>%
+  pivot_longer(-c(X,c)) %>%
+  mutate(observed = ifelse((name=="Y_0" &  c==0) | (name=="Y_1" & c==1), 1,0)) %>%
+  ggplot(aes(X, value, color=name))+
+  geom_smooth(method="loess", se=F)+
+  theme_bw()
+```
+
+## Illustration 
+
+Adapted from Cattaneo et. al's RD - Foundations Cambridge Element.  The specific data is from Meyersson (2014), who is interested in the impact of Islamic party victory in municipal elections in 1994 in Turkey on women's educational achievement.  Specifically $X$ is the vote margin of the largest Islamic party to the largest secular party in the election - so $X<0$ implies the Islamic party lost and vice versa.  $T$ is just an indicator for victory by the Islamic party: $T=1$ if $X>0$.  $Y$ is the percentage of women in high school in 1994 who finished by 2000.
+
+```{r}
+meyersson<-read_dta("https://github.com/rdpackages-replication/CIT_2020_CUP/raw/master/CIT_2020_CUP_polecon.dta")
+
+# Not a good idea to use reserved names like T (logical true) for object / variables
+meyersson <- meyersson %>%
+  rename(Treat='T')
+
+tibble(meyersson)
+out <-rdplot(meyersson$Y, meyersson$X, nbins = c(20,20), binselect = 'esmv', y.lim = c(0,25))
+
+# 2 Eq 
+islamic_loss <-lm(Y~X, data=meyersson[meyersson$X < 0 & meyersson$X >= -20,])
+left_intercept = islamic_loss$coefficients[1]
+print(left_intercept)
+islamic_win <-lm(Y~X, data=meyersson[meyersson$X > 0 & meyersson$X <= 20,])
+right_intercept = islamic_win$coefficients[1]
+print(right_intercept)
+difference = round(right_intercept - left_intercept, 3)
+print(paste("The RD estimator is", difference, sep = " "))
+
+```
+What are we looking at here? Below the cutpoint the Islamic party barely lost the election, where above it barely won.  The first model regresses $Y$ on $X$ using only municipalities where the Islamic party lost by 20 points or less.  The regression intercept is the estimated value of $Y$ when $X = 0$.  Interpretation is that when the Islamic party just lost the election, ~12.6% of women finished high school.
+
+Other regression does the same for Islamic victories of 20 points or less.  The same coefficient here is 15.5%.  So the effect of Islamic victory is equal to the difference ~ 2.9%
+
+We can do the same thing with one equation using an interaction.  The coefficient on T is the discontinuity.
+
+```{r}
+# 1 eq
+
+out <-lm(Y ~ X*Treat, data=meyersson[meyersson$X >= -20 & meyersson$X <= 20,])
+summary(out)
+print(paste("The RD estimator is", round(coef(out)[which(names(coef(out))=="Treat")], 3), sep = " "))
+```
+
+Alternatively, the rdrobust package can estimate this for us:
+```{r}
+# Auto
+auto <- rdrobust(meyersson$Y, meyersson$X, p=1, h=20)
+summary(auto)
+```
+In general, it is best to let rdrobust choose the 'optimal' bandwidth - that balances bias in the polynomial approximation of the data (increasing in bandwidth) against variance of the approximation (decreasing in bandwidth).  See Cattaneo et. al, 4.4.2 (p. 45)
+
+```{r}
+#Auto, optimal bandwidth
+opt <- rdrobust(meyersson$Y, meyersson$X, p=1)
+summary(opt)
+```
+
+# Matching
+
+## Identification
+
+Conditional independence of potential outcomes, given a set of observed covariates, $X$: 
+$$ (Y_i(0), Y_i(1)) \ci T | X$$
+While this looks a lot like the identifying assumptions for a randomized experiment, $X$ is doing a lot of work here.  In an experiment, there can be no confounders of the $T \rightarrow Y$ relationship because no outside factors can cause random treatment.  For matching, as in all covariate adjustment methods, there can be shared causes of $T$ and $Y$, which need to be adjusted to identify the treatment effect.
+
+It's important to note here that the identifying assumption behind matching is no different that the assumption behind multivariate regression: selection on observables  (Sekhon, 2009; 496).  Matching does not magically create identification where regression fails; if regression is not identified then matching is not identified.
+
+Matching's value is in it's weaker assumptions than regression.  Matching allows for covariate adjustment without functional form assumptions.  In contrast, regression imposes parametric form assumptions - e.g. linearity and additivity (unless interactions specified) for OLS.  
+
+## Propensity Score Matching
+
+Given the high dimensionality of matching problems, we need a way to reduce the covariate matrix $X$ into a single measure of similarity or distance.  Propensity score matching creates a metric of the probability of a unit receiving treatment based on $X$.
+
+We model:
+
+$$Pr(T|X) = \frac{1}{1+e^{X \beta}}$$
+We could use whatever model we like, but logistic regression is standard.  Mechanically, we simply regress the treatment indicator $T$ against the covariates, and generate the predicted probability of receiving treatment - either as the predicted probability (above) or linear inner portion of the GLM (just $X \beta$).  
+
+To get a feel let's look at the distance metric for the LaLonde data. 
+```{r}
+data("lalonde", package = "MatchIt")
+tibble(lalonde)
+m.out0 <- matchit(treat ~ age + educ + race + married + 
+                   nodegree + re74 + re75, data = lalonde,
+                 method = NULL, distance = "glm")
+summary(m.out0)
+plot(m.out0, type="jitter", interactive=F)
+```
+
+Unsurprisingly, assuming the covariates affect treatment assignment, we see treated units have higher propensity to receive treatment.
+
+```{r}
+m.out1 <- matchit(treat ~ age + educ + race + married + 
+                   nodegree + re74 + re75, data = lalonde,
+                 method = "nearest", distance = "glm")
+plot(m.out1, type="jitter", interactive=F)
+plot(m.out1, type="density", interactive=F)
+plot(summary(m.out1))
+```
+
+Black is the distribution of treated units, grey is the control.  Ideally these would overlap exactly, but some issues with age and race.  We can also show the mean differences - but note that means can conceal differences in the distributions - look at age.
+
+PSM is widely used, but has a few drawbacks.  First, there's no guarantee that the matching the propensity score actually balances the covariate set.  Second, in conjunction with nearest neighbor (NN) matching (as above), King and Nielson (2019) show that pruning (dropping units far from counterparts in the other arm) actually makes imbalance worse, because PSM doesn't use information beyond the propensity score for pruning.
+
+## Mahalanobis
+
+As an alternative, we can match on Mahalanobis distance, which matches directly on the covariate set.  Unlike PSM, Mahalanobis is a distance metric, meaning it is only defined for pairs of observations, i and j:
+
+$$\sqrt{(X_i - X_j)S^{-1}(X_i - X_j)}$$
+Where $S$ is the data covariance matrix, $X_i$ is a vector of control variables for $i$, and equivalently for $j$
+
+
+```{r}
+m.out2 <- matchit(treat ~ age + educ + race + married + 
+                   nodegree + re74 + re75, data = lalonde,
+                 method = "nearest", distance = "mahalanobis")
+plot(m.out2, type="density", interactive=F)
+plot(summary(m.out2))
+```
+
+## Effect Estimation
+
+Estimation on the matched data without controls:
+
+```{r}
+match_dat <- match.data(m.out2)
+mod <- lm(re78 ~ treat, data=match_dat, weights=weights)
+summary(mod)
+```
+
+The effect is just the coefficient on the treatment indicator.  Some authors (e.g., Ho et. al 2007) argue that you should perform full parametric analysis on the matched data, including the matched variables as controls:
+
+```{r}
+
+full <- lm(re78 ~ treat  + age + educ + race + married + nodegree + 
+             re74 + re75, data = match_dat, weights = weights)
+
+avg_comparisons(full,
+                variables = "treat",
+                vcov = ~subclass,
+                newdata = subset(match_dat, treat == 1),
+                wts = "weights")
+
+```
+In more complex models, it may be beneficial to extract the marginal effect of treatment - sometimes referred to as G-computation.  In simple models- e.g. OLS with no interaction terms, as above - the marginal effect of treatment is identical to the coefficient on $T$.  NB: this does not hold for even purely additive GLMs due to the link function. 
+
+# Difference-in-Differences
+
+The canonical diff-in-diff involves two units - one treated - observed at two time periods - pre and post-treatment.  Thus we have four data points - the treated and control unit before and after treatment.  The counterfactual treated unit is constructed using a combination of the control unit and the pre-treatment treated unit.
+
+## Identification
+
+Parallel trends:
+
+$$E[Y_t(0)−Y_{t−1}(0)|T=1]=E[Y_t(0)−Y_{t−1}(0)|T=0]$$
+Where $t$ denotes the post-treatment period, $t-1$ the pretreatment period.  Parallel trends say that the difference in the potential outcomes for the treated unit between the two periods is equal to the same difference in the control unit.  The RHS is observed information - the LHS is not because it contains the counterfactual outcomes of the treated unit under control.  If this is the case, in the absence of treatment the the treated unit would be equal to the control unit plus some intercept shift we can estimate from pre-treatment data.  Again, this is easier to see than read:
+
+```{r} 
+base<-2
+treat_unit_effect<-4
+time_effect<-2
+treatment_effect<- -3
+
+counter_pre <- base+treat_unit_effect
+treated_pre <- base+treat_unit_effect
+treated_post <- base+treat_unit_effect+treatment_effect+time_effect
+treated_counter <- base+treat_unit_effect+time_effect
+assumed_counter <- base+treat_unit_effect+time_effect
+
+control_pre <- base
+control_post <- base+time_effect
+
+data <- data.frame(time=c(1,1,1,2,2,2,2),
+                   unit=c("Treat", "Control", "Counter", "Treat",
+                          "Control", "Counter", "Counter"),
+                   Y = c(treated_pre, control_pre, counter_pre, treated_post, 
+                         control_post, assumed_counter, treated_counter))
+data %>%
+  ggplot(aes(as.factor(time), Y, color=unit, group  = unit))+
+  geom_point()+
+  geom_line()+
+  xlab("Time")+
+  #scale_color_viridis_d()+
+  theme(legend.title = "Unit")+
+  theme_bw()+
+  annotate(geom = "segment", x = "2", xend = "2",
+           y = assumed_counter, yend = treated_post,
+           linetype = "dashed", color = "blue")+
+  annotate("text", x = 2.25, y = 6.25, label = "Effect")
+
+```
+
+## Illustration
+Our data come from Abadie, Diamond, and Hainmueller (2010) examining the effect of Proposition 99, a California anti-smoking law passed in late 1988.  We have data on 38 states that did not implement anti-smoking laws between 1970 and 2000.  The outcome of interest is cigarette sales.  We also have pre-treatment covariates that we will not consider for now.
+
+To implement a standard 2x2 diff-in-diff, we will select a state to compare against CA: 
+```{r}
+data("smoking")
+tibble(smoking)
+
+smoke_did <- smoking %>% 
+  filter(state %in% c("Colorado", "California") & year %in% c(1988, 1989))
+
+smoke_did %>%
+  ggplot(aes(as.factor(year), cigsale, group=as.factor(state), color=as.factor(state)))+
+  geom_point() +
+  geom_line()+
+  theme_bw()
+```
+
+```{r}
+did <- lm(cigsale ~ as.factor(state=="California")*as.factor(year==1989), smoke_did)
+coef <- round(coef(did), digits=1)
+plot <- data.frame(year = c(rep(1988, 3), rep(1989, 3)),
+                   state = rep(c("CA", "CA", "CO"), 2),
+                   est = rep(c("treat", "counter", "control"), 2),
+                   cig = c(coef[1]+coef[2],
+                           coef[1]+coef[2],
+                           coef[1],
+                           coef[1]+coef[2]+coef[3]+coef[4],
+                           coef[1]+coef[2]+coef[3],
+                           coef[1]+coef[3]))
+
+plot %>%
+  ggplot(aes(as.factor(year), cig, color=est, group  = est))+
+  geom_point()+
+  geom_line()+
+  xlab("Year")+
+  #scale_color_viridis_d()+
+  theme(legend.title = "State")+
+  theme_bw()+
+  annotate(geom = "segment", x = "1989", xend = "1989",
+           y = coef[1]+coef[2]+coef[3], yend = coef[1]+coef[2]+coef[3]+coef[4],
+           linetype = "dashed", color = "blue")+
+  annotate("text", x = 2.25, y = 83, label = "Effect")
+
+
+```
+
+## Testing for Parallel Trends
+
+*Is not possible.*  The  assumption relies on counterfactual information - as such it cannot be subject to empirical testing.  
+
+Tests of the Parallel Trends assumption are actually tests of Parallel *Pre-Treatment* Trends.  Failing these tests is taken as indication PT is unlikely to hold because it already wasn't.  Passing taking as evidence PT holds.  This is not guaranteed - PT can fail even if pre-treatment PT holds.
+
+```{r}
+smoking %>%
+  filter(state %in% c("California", "Colorado") & year < 1990) %>%
+  ggplot(aes(year, cigsale, color=as.factor(state)))+
+  geom_point() +
+  geom_line()+
+  geom_vline(xintercept=1988.5)+
+  theme_bw()
+
+```
+
+# Synthetic Control
+
+Sometimes, as above, parallel trends fails, in which case DiD is not identified. As an alternative we can consider the Synthetic Control method, which creates a counterfactual $Y(0)$ as a weighted combination of the control units that best match the treated unit(s) in the pre-treatment period.  Synthetic control can be extended to multiple treated units, multiple treatment periods, treatment reversal etc.
+
+## Identification
+
+It is helpful to begin with the parallel trends assumption, which we will re-write:
+
+$$ (Y_{it}(0), Y_{it}(1)) \ci T | X, \lambda_t u_i, t $$
+Where $X$ is a set of pre-treatment covariates, $t$ is a time fixed effect (above the difference between 1988 and 1989), and $u_i$ is a unit fixed effect (above, the difference between CA and CO in all time periods).
+
+The difference between synthetic control and DiD lies in $\lambda$.  For a DiD, $\lambda = 1$, the difference between CA and CO in potential outcomes is constant, that's why the potential outcomes are parallel and the effect can be removed by time differencing.  Synthetic controls allow $\lambda$ to vary with time - the difference between CA and CO varies over time, allowing better matching.
+
+## Illustration
+
+At it's core, the Synthetic Control is a reweighting method that constructs weights for the aggregate units and the pre-treatment covariates such that the difference between the treated unit and control unit in the pre-treatment is minimized.  
+
+Here's an visualization of our data:
+
+```{r}
+smoking %>%
+  ggplot(aes(year, cigsale, group = state, color=as.factor(state=="California")))+
+  geom_point(alpha=.5) +
+  geom_line(alpha=.5)+
+  geom_vline(xintercept=1988.5)+
+  theme_bw()
+```
+The well known plot from Abadie et. al: 
+```{r}
+smoking %>%
+  group_by(state=="California", year) %>%
+  mutate(annual_mean = mean(cigsale)) %>%
+  ggplot(aes(year, annual_mean, color=as.factor(state=="California")))+
+  geom_point() +
+  geom_line()+
+  geom_vline(xintercept=1988.5)+
+  theme_bw()
+```
+
+```{r}
+#Adapted from tidylpa help file: 
+
+smoking_out <-
+  
+  smoking %>%
+  
+  # initial the synthetic control object
+  synthetic_control(outcome = cigsale, # outcome
+                    unit = state, # unit index in the panel data
+                    time = year, # time index in the panel data
+                    i_unit = "California", # unit where the intervention occurred
+                    i_time = 1988, # time period when the intervention occurred
+                    generate_placebos=T # generate placebo synthetic controls (for inference)
+                    ) %>%
+  
+  # Generate the aggregate predictors used to fit the weights
+  
+  # average log income, retail price of cigarettes, and proportion of the
+  # population between 15 and 24 years of age from 1980 - 1988
+  generate_predictor(time_window = 1980:1988,
+                     ln_income = mean(lnincome, na.rm = T),
+                     ret_price = mean(retprice, na.rm = T),
+                     youth = mean(age15to24, na.rm = T)) %>%
+  
+  # average beer consumption in the donor pool from 1984 - 1988
+  generate_predictor(time_window = 1984:1988,
+                     beer_sales = mean(beer, na.rm = T)) %>%
+  
+  # Lagged cigarette sales 
+  generate_predictor(time_window = 1975,
+                     cigsale_1975 = cigsale) %>%
+  generate_predictor(time_window = 1980,
+                     cigsale_1980 = cigsale) %>%
+  generate_predictor(time_window = 1988,
+                     cigsale_1988 = cigsale) %>%
+  
+  
+  # Generate the fitted weights for the synthetic control
+  generate_weights(optimization_window = 1970:1988, # time to use in the optimization task
+                   margin_ipop = .02,sigf_ipop = 7,bound_ipop = 6 # optimizer options
+  ) %>%
+  
+  # Generate the synthetic control
+  generate_control()
+```
+```{r}
+smoking_out %>% plot_trends()
+```
+
+```{r}
+smoking_out %>% plot_weights()
+```
+
+```{r}
+smoking_out %>% plot_differences()
+```
