@@ -69,7 +69,7 @@ GOTV stands for get-out-the-vote and is binary.  Let's assume interest is binary
 Now, assume we grab 200 people and ask for 100 to volunteer for the treatment.  It seems likely that people who are more interested in politics would be more likely to volunteer for the treatment:
 
 ```{r, echo=F}
-n <- 100
+n <- 200
 int <- c(rep(0,n/2), rep(1,n/2))
 treat_self <- rbinom(n, size=1, prob = .25 + .5*int)
 table(int, treat_self)
@@ -96,6 +96,9 @@ self_treat_data %>%
   summarize_all(mean) %>%
   round(digits=2)
 ```
+
+Instead, randomly assign each unit to either arm: 
+
 ```{r}
 treat_random <- sample(0:1, n, replace=T)
 vote <- .1+ 0.3*treat_random + 0.05*income+.25*int + rnorm(n, 0, .2)
@@ -139,7 +142,7 @@ random_treat_data %>%
   summarize_all(mean) %>%
   round(digits=2)
 ```
-
+Conditioning on awareness creates imbalance in interest, even though interest is independent of treatment and thus in the raw data is balanced.  This is because our subsample of high interest people contains two 'types:' high interest individuals who did not receive the treatment, and less interested individuals who did.  This looks a lot like canonical selection bias, except we didn't allow selection into treatment.  But, by selecting on awareness we have, indirectly, selected on interest. 
 
 # Regression Discontinuity
 
@@ -167,7 +170,7 @@ rd_plot %>%
 
 ## Illustration 
 
-Adapted from Cattaneo et. al's RD - Foundations Cambridge Element.  The specific data is from Meyersson (2014), who is interested in the impact of Islamic party victory in municipal elections in 1994 in Turkey on women's educational achievement.  Specifically $X$ is the vote margin of the largest Islamic party to the largest secular party in the election - so $X<0$ implies the Islamic party lost and vice versa.  $T$ is just an indicator for victory by the Islamic party: $T=1$ if $X>0$.  $Y$ is the percentage of women in high school in 1994 who finished by 2000.
+Adapted from Cattaneo et al.'s RD - Foundations Cambridge Element.  The specific data is from Meyersson (2014), who is interested in the impact of Islamic party victory in municipal elections in 1994 in Turkey on women's educational achievement.  Specifically $X$ is the vote margin of the largest Islamic party to the largest secular party in the election - so $X<0$ implies the Islamic party lost and vice versa.  $T$ is just an indicator for victory by the Islamic party: $T=1$ if $X>0$.  $Y$ is the percentage of women in high school in 1994 who finished by 2000.
 
 ```{r}
 meyersson<-read_dta("https://github.com/rdpackages-replication/CIT_2020_CUP/raw/master/CIT_2020_CUP_polecon.dta")
@@ -210,7 +213,7 @@ Alternatively, the rdrobust package can estimate this for us:
 auto <- rdrobust(meyersson$Y, meyersson$X, p=1, h=20)
 summary(auto)
 ```
-In general, it is best to let rdrobust choose the 'optimal' bandwidth - that balances bias in the polynomial approximation of the data (increasing in bandwidth) against variance of the approximation (decreasing in bandwidth).  See Cattaneo et. al, 4.4.2 (p. 45)
+In general, it is best to let rdrobust choose the 'optimal' bandwidth - that balances bias in the polynomial approximation of the data (increasing in bandwidth) against variance of the approximation (decreasing in bandwidth).  See Cattaneo et al., 4.4.2 (p. 45)
 
 ```{r}
 #Auto, optimal bandwidth
@@ -228,7 +231,7 @@ While this looks a lot like the identifying assumptions for a randomized experim
 
 It's important to note here that the identifying assumption behind matching is no different that the assumption behind multivariate regression: selection on observables  (Sekhon, 2009; 496).  Matching does not magically create identification where regression fails; if regression is not identified then matching is not identified.
 
-Matching's value is in it's weaker assumptions than regression.  Matching allows for covariate adjustment without functional form assumptions.  In contrast, regression imposes parametric form assumptions - e.g. linearity and additivity (unless interactions specified) for OLS.  
+Matching's value is in its weaker assumptions than regression.  Matching allows for covariate adjustment without functional form assumptions.  In contrast, regression imposes parametric form assumptions - e.g. linearity and additivity (unless interactions specified) for OLS.  
 
 ## Propensity Score Matching
 
@@ -291,7 +294,7 @@ mod <- lm(re78 ~ treat, data=match_dat, weights=weights)
 summary(mod)
 ```
 
-The effect is just the coefficient on the treatment indicator.  Some authors (e.g., Ho et. al 2007) argue that you should perform full parametric analysis on the matched data, including the matched variables as controls, as the controls will eliminate residual imbalance due to imperfect matching:
+The effect is just the coefficient on the treatment indicator.  Some authors (e.g., Ho et al. 2007) argue that you should perform full parametric analysis on the matched data, including the matched variables as controls, as the controls will eliminate residual imbalance due to imperfect matching:
 
 ```{r}
 
@@ -316,7 +319,7 @@ The canonical diff-in-diff involves two units - one treated - observed at two ti
 Parallel trends:
 
 $$E[Y_t(0)−Y_{t−1}(0)|T=1]=E[Y_t(0)−Y_{t−1}(0)|T=0]$$
-Where $t$ denotes the post-treatment period, $t-1$ the pretreatment period.  Parallel trends say that the difference in the potential outcomes for the treated unit between the two periods is equal to the same difference in the control unit.  The RHS is observed information - the LHS is not because it contains the counterfactual outcomes of the treated unit under control.  If this is the case, in the absence of treatment the the treated unit would be equal to the control unit plus some intercept shift we can estimate from pre-treatment data.  Again, this is easier to see than read:
+Where $t$ denotes the post-treatment period, $t-1$ the pretreatment period.  Parallel trends say that the difference in the potential outcomes for the treated unit under control between the two periods is equal to the same difference in the control unit.  The RHS is observed information - the LHS is not because it contains the counterfactual outcomes of the treated unit under control.  If this is the case, in the absence of treatment the the treated unit would be equal to the control unit plus some intercept shift we can estimate from pre-treatment data.  Again, this is easier to see than read:
 
 ```{r} 
 base<-2
@@ -444,7 +447,8 @@ smoking %>%
   geom_vline(xintercept=1988.5)+
   theme_bw()
 ```
-The well known plot from Abadie et. al: 
+
+The well known plot from Abadie et al.: 
 ```{r}
 smoking %>%
   group_by(state=="California", year) %>%
